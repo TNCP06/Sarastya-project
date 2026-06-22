@@ -59,8 +59,8 @@
 - 2D ☑ `.env.example`: NEW bot token/channel + `NEXT_PUBLIC_BOT_USERNAME` placeholders,
        `JWT_SECRET`/`JWT_EXPIRES_IN_HOURS`/`ALLOWED_ORIGINS`, DB `scd`, `COMPOSE_PROJECT_NAME`,
        copy-from-`~/tcd/.env` notes for `TG_API_ID/HASH/GROQ_API_KEYS/CLOUDFLARE_*`. Turso legacy dropped.
-- 2E ☐ `deploy.sh` + CD notes for `~/scd`; landing `README.md` (links to api/web/mobile repos +
-       deployed URLs + APK); project `CLAUDE.md`.
+- 2E ☑ `deploy.sh` (pulls the 3 buildable repos + `docker compose -p scd up -d --build`),
+       landing `README.md` (repo table + architecture + `~/scd` deploy), project `CLAUDE.md`.
 - 5  ☐ Deploy & verify on VPS; share repos with **ngertos@gmail.com**.
 
 ## Notes
