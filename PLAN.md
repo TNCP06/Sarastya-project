@@ -45,8 +45,11 @@
 | Telegram | NEW bot token + NEW storage channel (operator supplies via `.env`) |
 
 ## Tasks
-- 2A ☐ Port Python engine into this repo (from source `bot/`). Keep modular split.
-- 2B ☐ `schema.sql` incl. new `users` table (id, email/username UNIQUE, password_hash, created_at).
+- 2A ☑ Port Python engine into `bot/` (from source). Modular split kept; runtime artifacts
+       (`*.session`, logs, pids, `run-all.cmd`, autostart ps1) excluded via `.gitignore`. `py_compile` clean.
+- 2B ☑ `schema.sql` incl. new `users` table (BIGINT id, name, email, password_hash, created_at;
+       case-insensitive unique email via `lower()`). Appended after `authorized_users`; mirrors
+       `Sarastya-project-api/db/users.sql`.
 - 2C ☐ `docker-compose.yml`: all services, `scd-` names, new host ports, `scd-net`,
        `COMPOSE_PROJECT_NAME=scd`. Decide build strategy for api/web images (build context per repo
        vs prebuilt). streamer→stream domain, web→drive domain; api internal-only.

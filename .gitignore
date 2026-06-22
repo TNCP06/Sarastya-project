@@ -1,0 +1,24 @@
+# Secrets / env
+.env
+*.local
+*.local.md
+
+# Telethon sessions (regenerated per account/bot — never commit)
+*.session
+*.session-journal
+
+# Runtime artifacts
+*.log
+*.pid
+*.err
+*.out.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
