@@ -1,0 +1,232 @@
+# Sarastya Drive (scd) — full stack for the VPS, deployed under ~/scd.
+#
+# ISOLATION: this stack must NOT collide with the existing `tcd` stack on the same box.
+# It uses scd-* container/service names, its own scd-net network, a dedicated DB (scd),
+# and shifted host ports (web 3100 · api 8090 · streamer 8088 · tg-bot-api 8181 · postgres 5433).
+# Run everything with the scd project name (or rely on COMPOSE_PROJECT_NAME=scd in .env):
+#   docker compose -p scd up -d --build
+#
+# REPO LAYOUT on the VPS — all four repos cloned side-by-side; this file lives in the umbrella
+# repo and references the api/web repos as sibling build contexts:
+#   ~/scd/
+#     Sarastya-project/        (umbrella — run compose here; Python engine + schema + this file)
+#     Sarastya-project-api/    (.NET 8 REST API — built as the scd-api image)
+#     Sarastya-project-web/    (Next.js dashboard — built as the scd-web image; Phase 3)
+#
+# Before first run:
+#   1) cp .env.example .env  and fill it in (strong POSTGRES_PASSWORD, Jwt__Secret, NEW bot
+#      token + storage channel, copy TG_API_ID/HASH/GROQ_API_KEYS from ~/tcd/.env).
+#   2) Create the NEW Telethon sessions once → bot/worker.session, bot/streamer.session
+#      (they are gitignored and bind-mounted so they survive rebuilds).
+#   3) scd-postgres auto-applies bot/schema.sql on first init (empty data dir).
+
+services:
+  # ── Self-hosted metadata database (the brain; shared by api/web/python engine) ──
+  scd-postgres:
+    image: postgres:16-alpine
+    container_name: scd-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-scd}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-scd}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./bot/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    ports:
+      - "127.0.0.1:5433:5432"   # localhost-only (VPS testing / pg_dump); never public
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-scd} -d ${POSTGRES_DB:-scd}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks: [scd-net]
+    restart: unless-stopped
+
+  # ── .NET 8 REST API — JWT auth + metadata CRUD (Dapper read / EF write) ──
+  # INTERNAL-ONLY: the web reaches it in-network via http://scd-api:8080; the host port is
+  # bound to localhost only (for Swagger / VPS testing via SSH tunnel), never exposed publicly.
+  scd-api:
+    build:
+      context: ../Sarastya-project-api
+      dockerfile: Dockerfile
+    container_name: scd-api
+    environment:
+      ConnectionStrings__Default: Host=scd-postgres;Port=5432;Database=${POSTGRES_DB:-scd};Username=${POSTGRES_USER:-scd};Password=${POSTGRES_PASSWORD}
+      Jwt__Secret: ${JWT_SECRET:?set JWT_SECRET in .env}
+      Jwt__ExpiresInHours: ${JWT_EXPIRES_IN_HOURS:-24}
+      AllowedOrigins: ${ALLOWED_ORIGINS:-http://localhost:3100}
+      ASPNETCORE_ENVIRONMENT: Production
+    ports:
+      - "127.0.0.1:8090:8080"
+    depends_on:
+      scd-postgres:
+        condition: service_healthy
+    networks: [scd-net]
+    restart: unless-stopped
+
+  # ── Next.js dashboard — Fetch+JWT to scd-api via the /papi/* rewrite ──
+  # Built from the web repo (Phase 3 populates it). Binary routes (stream/thumb/subtitles/events)
+  # stay as Next routes proxying scd-streamer / reading PG.
+  scd-web:
+    build:
+      context: ../Sarastya-project-web
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_BOT_USERNAME: ${NEXT_PUBLIC_BOT_USERNAME:-}
+        DATABASE_URL: ${DATABASE_URL}
+    container_name: scd-web
+    env_file: .env
+    environment:
+      API_BASE_URL: http://scd-api:8080        # /papi/* rewrite target (server-side)
+      STREAMER_URL: http://scd-streamer:8080
+      STREAMER_SECRET: ${STREAMER_SECRET:-}
+    ports:
+      - "3100:3000"                            # drive.tncp.web.id → here (tunnel/nginx)
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+    depends_on:
+      scd-postgres:
+        condition: service_healthy
+    networks: [scd-net]
+    restart: unless-stopped
+
+  # ── Local Telegram Bot API server (big uploads / downloads) ──
+  scd-telegram-bot-api:
+    image: aiogram/telegram-bot-api:latest
+    container_name: scd-telegram-bot-api
+    environment:
+      TELEGRAM_API_ID: ${TG_API_ID}
+      TELEGRAM_API_HASH: ${TG_API_HASH}
+      TELEGRAM_LOCAL: "true"
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+    ports:
+      - "127.0.0.1:8181:8081"
+    networks: [scd-net]
+    restart: unless-stopped
+
+  # ── Python engine: bot (index/download/purge/backup/Bot Drop) ──
+  scd-bot:
+    build:
+      context: .
+      dockerfile: bot/Dockerfile
+    container_name: scd-bot
+    command: ["python", "-u", "bot.py"]
+    env_file: .env
+    environment:
+      TELEGRAM_API_URL: http://scd-telegram-bot-api:8081
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+    depends_on:
+      scd-postgres:
+        condition: service_healthy
+    networks: [scd-net]
+    restart: unless-stopped
+
+  # ── Python engine: watcher (index history once, then upload-queue executor) ──
+  scd-watcher:
+    build:
+      context: .
+      dockerfile: bot/Dockerfile
+    container_name: scd-watcher
+    command: ["sh", "-c", "python -u index_history.py && python -u watcher.py"]
+    env_file: .env
+    environment:
+      WORKER_OUT_DIR: /staging/_parts
+    volumes:
+      - staging:/staging
+      - ./bot/worker.session:/app/worker.session
+    depends_on:
+      scd-postgres:
+        condition: service_healthy
+    networks: [scd-net]
+    restart: unless-stopped
+
+  # ── Python engine: streamer (on-the-fly video + background compression + subtitles) ──
+  scd-streamer:
+    build:
+      context: .
+      dockerfile: bot/Dockerfile
+    container_name: scd-streamer
+    command: ["python", "-u", "streamer.py"]
+    env_file: .env
+    environment:
+      CACHE_DIR: /cache
+      CACHE_MAX_SIZE_GB: "6"
+      PREFETCH_BUFFER_MB: "16"
+      CHUNK_SIZE_MB: "1"
+      INITIAL_CHUNKS: "4"
+      PREFETCH_TIMEOUT_S: "90"
+      STREAMER_SESSION: streamer
+      STREAMER_SECRET: ${STREAMER_SECRET:-}
+      TELEGRAM_API_URL: http://scd-telegram-bot-api:8081
+      # background video compression
+      COMPRESSED_DIR: /compressed
+      VIDEO_COMPRESS: "1"
+      VIDEO_CRF: "23"
+      VIDEO_PRESET: veryfast
+      VIDEO_MIN_COMPRESS_MB: "20"
+      VIDEO_TRANSCODE_CONCURRENCY: "1"
+      VIDEO_TRANSCODE_THREADS: "0"
+      COMPRESSED_MAX_SIZE_GB: "0"
+      # background subtitle generation (Groq Whisper STT + translation)
+      SUBTITLE_GEN: "1"
+      SUBTITLES_DIR: /subtitles
+      GROQ_API_KEYS: ${GROQ_API_KEYS:-}
+      GROQ_STT_MODELS: whisper-large-v3-turbo,whisper-large-v3
+      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+      CLOUDFLARE_STT_MODEL: "@cf/openai/whisper-large-v3-turbo"
+      SUBTITLE_TARGET_LANGS: en,id
+      SUBTITLE_CHUNK_SECONDS: "600"
+      SUBTITLE_CHUNK_CONCURRENCY: "0"
+      SUBTITLE_CHUNK_RETRY_ATTEMPTS: "3"
+      SUBTITLE_CHUNK_RETRY_DELAY_S: "20"
+      SUBTITLE_MAX_REPAIR_ATTEMPTS: "4"
+      SUBTITLE_TRANSLATE_RETRY: "3"
+      SUBTITLE_TRANSLATE_RETRY_DELAY_S: "4"
+      SUBTITLE_TL_REPAIR_MAX: "5"
+      SUBTITLE_BACKFILL: "1"
+      SUBTITLE_BACKFILL_INTERVAL_S: "0"
+      SUBTITLE_BACKFILL_IDLE_S: "3600"
+      SUBTITLE_BACKFILL_START_DELAY_S: "20"
+    ports:
+      - "8088:8080"                            # stream.tncp.web.id → here (tunnel/nginx)
+    volumes:
+      - cache:/cache
+      - compressed:/compressed
+      - subtitles:/subtitles
+      - ./bot/streamer.session:/app/streamer.session
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+    depends_on:
+      scd-postgres:
+        condition: service_healthy
+    networks: [scd-net]
+    restart: unless-stopped
+
+  # ── Cloudflare Tunnel — public HTTPS for web (drive) + streamer (stream), no open ports ──
+  # Configure the tunnel's Public Hostnames in the Cloudflare dashboard:
+  #   drive.tncp.web.id  → http://scd-web:3000
+  #   stream.tncp.web.id → http://scd-streamer:8080
+  # Empty token = the connector idles harmlessly (rest of the stack unaffected).
+  scd-cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: scd-cloudflared
+    command: ["tunnel", "--no-autoupdate", "run", "--token", "${CLOUDFLARE_TUNNEL_TOKEN:-}"]
+    depends_on:
+      - scd-web
+      - scd-streamer
+    networks: [scd-net]
+    restart: unless-stopped
+
+networks:
+  scd-net:
+    name: scd-net
+
+volumes:
+  staging:
+  pgdata:                  # PostgreSQL data — persistent (backed up daily to Telegram)
+  cache:                   # video streaming cache — expendable (data lives in Telegram)
+  compressed:              # compressed video copies — persistent (CPU-expensive to rebuild)
+  subtitles:               # generated subtitle tracks — persistent
+  telegram-bot-api-data:

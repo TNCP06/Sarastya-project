@@ -50,11 +50,15 @@
 - 2B ☑ `schema.sql` incl. new `users` table (BIGINT id, name, email, password_hash, created_at;
        case-insensitive unique email via `lower()`). Appended after `authorized_users`; mirrors
        `Sarastya-project-api/db/users.sql`.
-- 2C ☐ `docker-compose.yml`: all services, `scd-` names, new host ports, `scd-net`,
-       `COMPOSE_PROJECT_NAME=scd`. Decide build strategy for api/web images (build context per repo
-       vs prebuilt). streamer→stream domain, web→drive domain; api internal-only.
-- 2D ☐ `.env.example`: new bot token/channel placeholders, `Jwt__Secret`, DB `scd`, notes to copy
-       `TG_API_ID/HASH/GROQ_API_KEYS` from `~/tcd/.env`.
+- 2C ☑ `docker-compose.yml`: all 8 services with `scd-*` names, shifted host ports (web 3100 ·
+       api 8090@localhost · streamer 8088 · tg-bot-api 8181@localhost · postgres 5433@localhost),
+       `scd-net`, `COMPOSE_PROJECT_NAME=scd`. **Build strategy = sibling-repo build contexts**:
+       api from `../Sarastya-project-api`, web from `../Sarastya-project-web`, python engine from
+       local `./bot`; all four repos cloned side-by-side under `~/scd/`. api internal-only
+       (localhost host port for SSH-tunnel testing). `docker compose config` validates.
+- 2D ☑ `.env.example`: NEW bot token/channel + `NEXT_PUBLIC_BOT_USERNAME` placeholders,
+       `JWT_SECRET`/`JWT_EXPIRES_IN_HOURS`/`ALLOWED_ORIGINS`, DB `scd`, `COMPOSE_PROJECT_NAME`,
+       copy-from-`~/tcd/.env` notes for `TG_API_ID/HASH/GROQ_API_KEYS/CLOUDFLARE_*`. Turso legacy dropped.
 - 2E ☐ `deploy.sh` + CD notes for `~/scd`; landing `README.md` (links to api/web/mobile repos +
        deployed URLs + APK); project `CLAUDE.md`.
 - 5  ☐ Deploy & verify on VPS; share repos with **ngertos@gmail.com**.
