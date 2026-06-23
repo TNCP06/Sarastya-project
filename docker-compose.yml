@@ -80,10 +80,12 @@ services:
       API_BASE_URL: http://scd-api:8080        # /papi/* rewrite target (server-side)
       STREAMER_URL: http://scd-streamer:8080
       STREAMER_SECRET: ${STREAMER_SECRET:-}
+      UPLOAD_STAGING_DIR: /staging             # shared with scd-watcher (same named volume)
     ports:
       - "3100:3000"                            # drive.tncp.web.id → here (tunnel/nginx)
     volumes:
       - telegram-bot-api-data:/var/lib/telegram-bot-api
+      - staging:/staging
     depends_on:
       scd-postgres:
         condition: service_healthy
@@ -115,6 +117,7 @@ services:
     env_file: .env
     environment:
       TELEGRAM_API_URL: http://scd-telegram-bot-api:8081
+      NEXT_PUBLIC_WEB_URL: ${NEXT_PUBLIC_WEB_URL:-https://drive.tncp.web.id}
     volumes:
       - telegram-bot-api-data:/var/lib/telegram-bot-api
     depends_on:
